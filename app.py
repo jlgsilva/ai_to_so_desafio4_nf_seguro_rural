@@ -99,6 +99,44 @@ div.stButton > button[kind="secondary"] {
 st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
 
 
+def _plot_bar_ajustavel(df, x_col, y_col, orientation="v", key_prefix="bar", height=320):
+    """Grafico de barras que evita o problema classico de dados reais
+    distorcidos: quando uma categoria concentra um valor muito maior
+    que as demais, o eixo linear "esmaga" as barras pequenas ate
+    ficarem invisiveis. Esta funcao sempre mostra o valor de cada barra
+    como rotulo (visivel mesmo quando a barra e minuscula) e sugere
+    escala logaritmica automaticamente quando detecta essa distorcao
+    (razao entre o maior e o menor valor positivo acima de 50x),
+    deixando o usuario alternar livremente."""
+    valor_col = y_col if orientation == "v" else x_col
+    valores = df[valor_col]
+    positivos = valores[valores > 0]
+    todos_positivos = len(positivos) == len(valores) and len(positivos) > 0
+    razao = (positivos.max() / positivos.min()) if len(positivos) > 1 else 1
+
+    usar_log = False
+    if todos_positivos and razao > 50:
+        usar_log = st.checkbox(
+            "Escala logaritmica (ha valores muito diferentes entre si nesta coluna)",
+            value=True, key=f"log_{key_prefix}",
+        )
+
+    fmt = "{text:.2s}"
+    if orientation == "v":
+        fig = px.bar(df, x=x_col, y=y_col, text=y_col)
+        fig.update_traces(texttemplate=fmt, textposition="outside")
+        if usar_log:
+            fig.update_yaxes(type="log")
+    else:
+        fig = px.bar(df, x=x_col, y=y_col, orientation="h", text=x_col)
+        fig.update_traces(texttemplate=fmt, textposition="outside")
+        if usar_log:
+            fig.update_xaxes(type="log")
+
+    fig.update_layout(margin=dict(t=10, b=10), height=height, uniformtext_minsize=8)
+    st.plotly_chart(fig, width='stretch')
+
+
 def _init_state():
     defaults = {
         "loaded_files": None,
@@ -325,15 +363,11 @@ with tab_overview:
             with col_g1:
                 if ov.get("top_categoria") is not None and len(ov["top_categoria"]):
                     st.markdown(f"**Registros por {dim_escolhida}**")
-                    fig = px.bar(ov["top_categoria"], x="categoria", y="contagem")
-                    fig.update_layout(margin=dict(t=10, b=10), height=320)
-                    st.plotly_chart(fig, width='stretch')
+                    _plot_bar_ajustavel(ov["top_categoria"], "categoria", "contagem", key_prefix="top_categoria")
             with col_g2:
                 if ov.get("valor_por_categoria") is not None and len(ov["valor_por_categoria"]):
                     st.markdown(f"**{valor_escolhido} por {dim_escolhida}**")
-                    fig = px.bar(ov["valor_por_categoria"], x="categoria", y="total")
-                    fig.update_layout(margin=dict(t=10, b=10), height=320)
-                    st.plotly_chart(fig, width='stretch')
+                    _plot_bar_ajustavel(ov["valor_por_categoria"], "categoria", "total", key_prefix="valor_categoria")
 
             if ov.get("serie_temporal") is not None and len(ov["serie_temporal"]) > 1:
                 st.markdown("**Evolucao ao longo do tempo**")
@@ -403,9 +437,11 @@ with tab_overview:
             df_qualidade = ov["qualidade_dados"]
             colunas_com_nulo = df_qualidade[df_qualidade["pct_nulo"] > 0]
             if len(colunas_com_nulo):
-                fig = px.bar(colunas_com_nulo.head(20), x="pct_nulo", y="coluna", orientation="h")
-                fig.update_layout(margin=dict(t=10, b=10), height=max(250, 22 * len(colunas_com_nulo.head(20))))
-                st.plotly_chart(fig, width='stretch')
+                altura = max(250, 22 * len(colunas_com_nulo.head(20)))
+                _plot_bar_ajustavel(
+                    colunas_com_nulo.head(20), "pct_nulo", "coluna",
+                    orientation="h", key_prefix="qualidade_dados", height=altura,
+                )
             else:
                 st.caption("Nenhuma coluna com valores nulos detectados na amostra perfilada.")
 
@@ -447,7 +483,7 @@ with tab_chat:
 
         st.subheader("Pergunte em linguagem natural")
 
-        for turno in st.session_state.chat_history:
+        for idx_turno, turno in enumerate(st.session_state.chat_history):
             with st.chat_message("user"):
                 st.write(turno.get("pergunta", ""))
             with st.chat_message("assistant"):
@@ -456,8 +492,10 @@ with tab_chat:
                     st.write(turno.get("texto_resposta", ""))
                     tipo = turno.get("tipo_visualizacao", "texto")
                     if tipo == "grafico_barras" and df_res.shape[1] >= 2:
-                        fig = px.bar(df_res, x=df_res.columns[0], y=df_res.columns[1])
-                        st.plotly_chart(fig, width='stretch')
+                        _plot_bar_ajustavel(
+                            df_res, df_res.columns[0], df_res.columns[1],
+                            key_prefix=f"chat_{idx_turno}",
+                        )
                     elif tipo == "grafico_linha" and df_res.shape[1] >= 2:
                         fig = px.line(df_res, x=df_res.columns[0], y=df_res.columns[1])
                         st.plotly_chart(fig, width='stretch')
