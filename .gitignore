@@ -1,0 +1,25 @@
+# segredos
+.env
+
+# dados gerados em tempo de execucao (uploads, historico, cache)
+data/
+
+# logs gerados em tempo de execucao
+logs/
+
+# ambiente virtual python
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# streamlit
+.streamlit/secrets.toml
+
+# sistema
+.DS_Store
+Thumbs.db

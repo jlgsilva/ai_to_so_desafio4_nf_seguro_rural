@@ -1,0 +1,10 @@
+streamlit>=1.38,<2
+pandas>=2.2.3,<3
+duckdb>=1.0,<2
+chardet>=5.2,<6
+plotly>=5.24,<6
+python-dotenv>=1.0,<2
+langchain>=0.3.1,<0.4
+langchain-core>=0.3.6,<0.4
+langchain-groq>=0.2,<0.4
+groq>=0.31,<1.0
