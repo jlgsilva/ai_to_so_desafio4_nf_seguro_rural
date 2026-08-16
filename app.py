@@ -147,6 +147,7 @@ def _init_state():
         "chat_history": [],
         "pending_question": None,
         "last_upload_signature": None,
+        "cache_respostas": {},
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -449,6 +450,24 @@ with tab_overview:
 # Interface B - Consulta em linguagem natural
 # ---------------------------------------------------------------------------
 def _process_question(pergunta: str):
+    """Executa o pipeline de agentes para a pergunta, com um cache
+    simples por sessao: se a MESMA pergunta ja foi respondida com
+    sucesso para o dataset atual, reaproveita o resultado em vez de
+    chamar a LLM de novo. Isso economiza tokens quando o usuario testa
+    a mesma pergunta mais de uma vez (por exemplo, apos um erro de
+    limite de taxa) e ajuda a esticar a cota diaria/por minuto da
+    conta Groq gratuita."""
+    chave_cache = (st.session_state.dataset_id, pergunta.strip().lower())
+    cache = st.session_state.setdefault("cache_respostas", {})
+
+    if chave_cache in cache:
+        log.info("Resposta reaproveitada do cache para: %s", pergunta)
+        resultado_cache = dict(cache[chave_cache])
+        resultado_cache["pergunta"] = pergunta
+        resultado_cache["do_cache"] = True
+        st.session_state.chat_history.append(resultado_cache)
+        return
+
     with st.spinner("Planejando, gerando consulta e calculando..."):
         try:
             result = answer_question(
@@ -459,6 +478,8 @@ def _process_question(pergunta: str):
             )
             storage.save_query(st.session_state.dataset_id, result)
             st.session_state.chat_history.append(result)
+            if result.get("sucesso"):
+                cache[chave_cache] = result
         except Exception as exc:
             log.exception("Erro inesperado no pipeline de agentes para a pergunta: %s", pergunta)
             st.session_state.chat_history.append({
@@ -490,6 +511,8 @@ with tab_chat:
                 df_res = turno.get("tabela_resultado")
                 if turno.get("sucesso") and df_res is not None:
                     st.write(turno.get("texto_resposta", ""))
+                    if turno.get("do_cache"):
+                        st.caption("Resposta reaproveitada do cache desta sessao (pergunta identica ja respondida antes; nenhuma chamada nova a LLM foi feita).")
                     tipo = turno.get("tipo_visualizacao", "texto")
                     if tipo == "grafico_barras" and df_res.shape[1] >= 2:
                         _plot_bar_ajustavel(

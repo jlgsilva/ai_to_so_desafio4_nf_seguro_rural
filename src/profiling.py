@@ -151,10 +151,48 @@ def build_llm_profile_summary(dataset_profile: dict, max_colunas_exemplo: int = 
             "glossario": fp.get("glossario", {}),
         })
 
+    arquivos_agrupados = _agrupar_arquivos_com_schema_identico(arquivos_compactos)
+
     return {
-        "arquivos": arquivos_compactos,
+        "arquivos": arquivos_agrupados,
         "relacionamentos": dataset_profile.get("relacionamentos", []),
     }
+
+
+def _agrupar_arquivos_com_schema_identico(arquivos_compactos: list[dict]) -> list[dict]:
+    """Quando varios arquivos tem exatamente o mesmo conjunto de
+    colunas e a mesma familia (caso tipico: o SISSER exportado em
+    varios periodos, ou NFe de varios meses), a versao compacta do
+    perfil listava o schema completo uma vez POR ARQUIVO, triplicando
+    (ou multiplicando pelo numero de arquivos) o tamanho do prompt sem
+    agregar informacao nova, ja que as colunas sao identicas. Isso ja
+    causou erro 413 (tokens por minuto excedidos) em uma unica chamada
+    de LLM com 3 arquivos do SISSER.
+
+    Esta funcao agrupa arquivos com schema identico em uma unica
+    entrada, com uma lista `arquivos` no lugar de um `arquivo` unico.
+    O agente Executor continua sabendo os nomes reais de cada arquivo
+    (para gerar UNION ALL entre eles), mas o detalhamento de colunas
+    aparece apenas uma vez por grupo, nao uma vez por arquivo."""
+    grupos: dict[tuple, dict] = {}
+    ordem: list[tuple] = []
+
+    for entrada in arquivos_compactos:
+        chave = (entrada["familia"], tuple(sorted(entrada["colunas"].keys())))
+        if chave not in grupos:
+            novo = dict(entrada)
+            novo["arquivos"] = [entrada["arquivo"]]
+            del novo["arquivo"]
+            novo["linhas_totais"] = entrada["linhas_totais"]
+            grupos[chave] = novo
+            ordem.append(chave)
+        else:
+            grupo = grupos[chave]
+            grupo["arquivos"].append(entrada["arquivo"])
+            grupo["linhas_totais"] += entrada["linhas_totais"]
+            grupo["arquivo_grande"] = grupo["arquivo_grande"] or entrada["arquivo_grande"]
+
+    return [grupos[chave] for chave in ordem]
 
 
 def build_minimal_profile_summary(dataset_profile: dict) -> dict:

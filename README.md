@@ -156,7 +156,9 @@ A aplicação é organizada em cinco abas:
    um valor muito maior que as demais (evitando que barras pequenas fiquem
    invisíveis por causa de um valor discrepante).
 3. **Perguntas**: chat em linguagem natural. Antes da primeira pergunta,
-   mostra sugestões clicáveis geradas a partir dos dados carregados.
+   mostra sugestões clicáveis geradas a partir dos dados carregados. Perguntas
+   idênticas feitas mais de uma vez na mesma sessão reaproveitam a resposta
+   anterior em cache, sem gastar tokens de novo.
 4. **Histórico**: datasets e perguntas anteriores (SQLite), além do log
    completo da aplicação com opção de download.
 5. **Sobre / Arquitetura**: este próprio README, renderizado dentro do app.
@@ -207,13 +209,29 @@ identificados e corrigidos:
   A correção adiciona o valor de cada barra como rótulo (sempre legível,
   mesmo quando a barra é minúscula) e sugere escala logarítmica
   automaticamente quando detecta essa distorção.
-- **Limite diário de tokens da Groq esgotado**: o modelo padrão usado pelos
-  agentes de raciocínio (`llama-3.3-70b-versatile`) tem um limite diário de
-  apenas 100 mil tokens na conta gratuita, que se esgota rapidamente. A
-  aplicação passou a usar `openai/gpt-oss-120b` para essa função, cujo limite
-  diário é o dobro (200 mil tokens) e que consome uma cota separada da usada
-  pelo modelo rápido (`llama-3.1-8b-instant`, com limite de 500 mil tokens
-  por dia). Ver detalhes na seção "Limites de tokens da conta Groq".
+- **Limite de tokens da Groq esgotado (dois episódios distintos)**: o modelo
+  padrão original para os agentes de raciocínio (`llama-3.3-70b-versatile`)
+  tem um limite diário de 100 mil tokens, que se esgota rapidamente. A
+  primeira correção trocou o modelo para `openai/gpt-oss-120b`, que tem
+  limite diário maior (200 mil tokens), mas esse modelo tem um limite POR
+  MINUTO mais baixo (8.000 tokens); como o SISSER é enviado em três arquivos
+  (2006-2015, 2016-2024, 2025) com o schema de 38 colunas **idêntico** entre
+  eles, o perfil compacto enviado à LLM repetia esse schema três vezes,
+  gerando uma única chamada de mais de 8 mil tokens e estourando o limite por
+  minuto mesmo estando longe do limite diário. A correção definitiva foi
+  detectar arquivos com schema idêntico e agrupá-los em uma única entrada do
+  perfil (função `_agrupar_arquivos_com_schema_identico` em
+  `src/profiling.py`), o que reduziu o tamanho do perfil compacto do SISSER
+  em mais da metade, e voltar a usar `llama-3.3-70b-versatile` para o agente
+  de raciocínio, por ter o maior limite por minuto (12.000 tokens) entre os
+  modelos gratuitos avaliados. Ver detalhes na seção "Limites de tokens da
+  conta Groq".
+- **Perguntas repetidas consumiam tokens de novo**: a aplicação agora guarda
+  em cache, por sessão, o resultado de cada pergunta respondida com sucesso
+  (chave: dataset carregado + texto da pergunta). Se a mesma pergunta for
+  feita de novo (por exemplo, ao testar após um erro de limite de taxa), a
+  resposta anterior é reaproveitada sem nenhuma nova chamada à LLM, o que
+  ajuda a esticar a cota disponível durante uma sessão de testes.
 
 ## Estrutura do repositório
 
@@ -407,11 +425,15 @@ consultar em caso de erro.
 
 ## Limites de tokens da conta Groq
 
-Contas gratuitas da Groq têm limites de tokens por minuto (TPM) e por dia
-(TPD) que variam por modelo, e cada modelo tem uma cota separada e
-independente dos demais. Um erro comum ao rodar a aplicação por um período
-prolongado é o esgotamento do limite diário de algum dos modelos, retornando
-HTTP 429.
+Contas gratuitas da Groq têm dois tipos de limite que importam aqui, e cada
+modelo tem uma cota própria, independente dos demais:
+
+- **TPM (tokens por minuto)**: limite por chamada/janela curta. Excedê-lo
+  retorna HTTP 413 ("Request too large"), mesmo que o restante do dia esteja
+  livre. É o limite mais fácil de estourar com uma única chamada grande.
+- **TPD (tokens por dia)**: limite acumulado ao longo do dia. Excedê-lo
+  retorna HTTP 429 ("Rate limit exceeded") e só libera de novo no horário
+  informado na mensagem de erro.
 
 A tabela abaixo resume os limites relevantes (ver valores atualizados em
 https://console.groq.com/docs/rate-limits):
@@ -420,15 +442,25 @@ https://console.groq.com/docs/rate-limits):
 |---|---|---|---|---|
 | llama-3.3-70b-versatile | 30 | 1.000 | 12.000 | 100.000 |
 | openai/gpt-oss-120b | 30 | 1.000 | 8.000 | 200.000 |
+| openai/gpt-oss-20b | 30 | 1.000 | 8.000 | 200.000 |
 | llama-3.1-8b-instant | 30 | 14.400 | 6.000 | 500.000 |
 
-O modelo padrão original para o agente de raciocínio
-(`llama-3.3-70b-versatile`) tem o menor limite diário (100 mil tokens),
-suficiente apenas para algumas dezenas de perguntas por dia. A aplicação
-usa, por padrão, `openai/gpt-oss-120b` para essa função (200 mil tokens por
-dia, o dobro) e `llama-3.1-8b-instant` para as tarefas mais simples (500 mil
-tokens por dia). Como os dois modelos têm cotas independentes, o total
-disponível por dia é a soma das duas, não uma cota compartilhada.
+A aplicação usa, por padrão, `llama-3.3-70b-versatile` para o agente de
+raciocínio (Planner e Executor) e `llama-3.1-8b-instant` para as tarefas
+mais simples (resumo do dataset, redação da resposta final). A escolha do
+modelo de raciocínio prioriza o TPM (12.000, o maior entre os modelos
+avaliados), não o TPD: o perfil dos dados enviado ao Planner e ao Executor
+pode chegar a alguns milhares de tokens em datasets com muitas colunas, e
+mais de uma chamada costuma acontecer dentro do mesmo minuto (planejamento,
+geração de SQL e, eventualmente, correção de erro). Um modelo com TPM baixo
+pode rejeitar uma única chamada mesmo estando bem abaixo do limite diário,
+como aconteceu em testes reais com `openai/gpt-oss-120b` (TPM 8.000): o
+perfil compacto de três arquivos do SISSER com schema idêntico passava de
+8.000 tokens numa única chamada. A aplicação corrige a causa raiz desse
+problema agrupando arquivos com schema idêntico em uma única entrada do
+perfil (ver "Correções de bugs relevantes"), o que reduz bastante o consumo
+por pergunta, além de agora ter um cache de perguntas por sessão que evita
+gastar tokens de novo em perguntas repetidas.
 
 Se o limite ainda assim for atingido, os modelos podem ser trocados sem
 alterar código, via variáveis de ambiente `GROQ_MODEL_RACIOCINIO` e
@@ -476,7 +508,7 @@ pytest tests/ -v
 - **Streamlit** para a interface web.
 - **LangChain** e **langchain-groq** para a orquestração dos agentes
   (framework de agentes exigido pelo desafio).
-- **Groq** como provedor de LLM, modelos gratuitos (`openai/gpt-oss-120b`
+- **Groq** como provedor de LLM, modelos gratuitos (`llama-3.3-70b-versatile`
   para planejamento e geração de SQL, `llama-3.1-8b-instant` para tarefas
   simples).
 - **DuckDB** como motor de consulta analítica sobre os arquivos CSV, sem

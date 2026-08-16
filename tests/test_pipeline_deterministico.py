@@ -106,12 +106,13 @@ def test_sisser_uniao_entre_anos_com_schema_identico():
 
 
 def test_perfil_compacto_fica_dentro_de_limite_de_tokens_seguro():
-    """Regressao: o profile completo enviado direto para a LLM já
+    """Regressao: o profile completo enviado direto para a LLM ja
     causou erro 413 (tokens por minuto excedidos) em contas Groq com
-    limites baixos (6000 TPM no modelo rapido). As versoes compact/
-    minimal devem manter o payload bem abaixo desse teto mesmo com
-    varios arquivos de muitas colunas (caso SISSER, 3 arquivos x 38
-    colunas)."""
+    limites baixos (8000 TPM no modelo openai/gpt-oss-120b). A conta
+    real de tokens usada pela API (8326, ver logs de producao) foi
+    cerca de 1,8x maior do que a estimativa ingenua de chars/4, entao
+    o limite deste teste usa uma proporcao mais conservadora
+    (chars/2.2) para pegar regressoes antes que virem erro real."""
     from src.profiling import build_llm_profile_summary, build_minimal_profile_summary
     import json as _json
 
@@ -119,15 +120,56 @@ def test_perfil_compacto_fica_dentro_de_limite_de_tokens_seguro():
     profile = build_dataset_profile(loaded)
 
     compact = build_llm_profile_summary(profile)
-    compact_tokens_estimado = len(_json.dumps(compact, ensure_ascii=False, default=str)) // 4
-    assert compact_tokens_estimado < 5500, (
-        f"Profile compacto muito grande ({compact_tokens_estimado} tokens estimados); "
-        "risco de erro 413 em contas Groq com TPM baixo."
+    texto_compact = _json.dumps(compact, ensure_ascii=False, default=str)
+    tokens_estimados = int(len(texto_compact) / 2.2)
+    assert tokens_estimados < 6000, (
+        f"Profile compacto muito grande ({tokens_estimados} tokens estimados, "
+        f"proporcao conservadora); risco de erro 413 mesmo em modelos com TPM "
+        f"de 8000."
     )
 
     minimal = build_minimal_profile_summary(profile)
     minimal_tokens_estimado = len(_json.dumps(minimal, ensure_ascii=False, default=str)) // 4
     assert minimal_tokens_estimado < 2500
+
+
+def test_perfil_compacto_agrupa_arquivos_com_schema_identico():
+    """Regressao: os tres arquivos do SISSER (2006-2015, 2016-2024,
+    2025) tem exatamente o mesmo schema de 38 colunas. Antes da
+    deduplicacao, o perfil compacto repetia esse schema uma vez por
+    arquivo, triplicando o tamanho do prompt sem agregar informacao
+    (foi a causa raiz do erro 413 em producao). Os tres devem aparecer
+    agrupados em uma unica entrada."""
+    from src.profiling import build_llm_profile_summary
+
+    loaded = _load_sample("exemplo_sisser.zip")
+    profile = build_dataset_profile(loaded)
+    compact = build_llm_profile_summary(profile)
+
+    assert len(compact["arquivos"]) == 1, (
+        "Os 3 arquivos do SISSER tem schema identico e deveriam ser "
+        "agrupados em uma unica entrada do perfil compacto"
+    )
+    grupo = compact["arquivos"][0]
+    assert set(grupo["arquivos"]) == {
+        "dados_abertos_psr_2006a2015csv.csv",
+        "dados_abertos_psr_2016a2024csv.csv",
+        "dados_abertos_psr_2025csv.csv",
+    }
+    assert grupo["linhas_totais"] > 0
+    assert len(grupo["colunas"]) > 30
+
+
+def test_perfil_compacto_nao_agrupa_arquivos_com_schema_diferente():
+    """NFe cabecalho e NFe itens tem colunas diferentes e nao devem
+    ser agrupados entre si."""
+    from src.profiling import build_llm_profile_summary
+
+    loaded = _load_sample("exemplo_nfe.zip")
+    profile = build_dataset_profile(loaded)
+    compact = build_llm_profile_summary(profile)
+
+    assert len(compact["arquivos"]) == 2
 
 
 def test_planner_prompt_nao_quebra_com_chaves_literais_do_json_de_exemplo():
